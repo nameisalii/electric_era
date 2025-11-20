@@ -1,12 +1,19 @@
 import sys
 
+UINT64_MAX = 2**64 - 1
+
 def error_exit():
     print("ERROR")
     sys.exit(1)
 
-def parse_time(t):
-    h, m = t.split(":")
-    return int(h) * 60 + int(m)
+def parse_uint64(token):
+    try:
+        value = int(token)
+    except ValueError:
+        error_exit()
+    if value < 0 or value > UINT64_MAX:
+        error_exit()
+    return value
 
 def main():
     if len(sys.argv) != 2:
@@ -17,58 +24,148 @@ def main():
     try:
         with open(filename, "r") as f:
             lines = [line.strip() for line in f if line.strip()]
-    except:
+    except OSError:
         error_exit()
 
-    station = {}
+    stations_idx = -1
+    reports_idx = -1
 
-    for line in lines:
+    for i, line in enumerate(lines):
+        if line == "[Stations]":
+            stations_idx = i
+        elif line == "[Charger Availability Reports]":
+            reports_idx = i
+
+    if stations_idx == -1 or reports_idx == -1 or stations_idx > reports_idx:
+        error_exit()
+
+    charger_to_station = {}
+    i = stations_idx + 1
+    while i < reports_idx:
+        line = lines[i]
         parts = line.split()
+        if len(parts) < 2:
+            error_exit()
+
+        station_token = parts[0]
+        station_id = None
+        try:
+            station_id = int(station_token)
+        except ValueError:
+            error_exit()
+
+        for c in parts[1:]:
+            try:
+                charger_id = int(c)
+            except ValueError:
+                error_exit()
+
+            if charger_id in charger_to_station:
+                error_exit()
+
+            charger_to_station[charger_id] = station_id
+
+        i += 1
+    reports = {}  
+
+    i = reports_idx + 1
+    while i < len(lines):
+        parts = lines[i].split()
         if len(parts) != 4:
             error_exit()
-        station_id, charger_id, start, end = parts
+
         try:
-            s = parse_time(start)
-            e = parse_time(end)
-        except:
-            error_exit()
-        if e < s:
+            charger_id = int(parts[0])
+        except ValueError:
             error_exit()
 
-        if station_id not in station:
-            station[station_id] = {}
-        if charger_id not in station[station_id]:
-            station[station_id][charger_id] = []
-        station[station_id][charger_id].append((s, e))
+        start = parse_uint64(parts[1])
+        end = parse_uint64(parts[2])
+
+        if end < start:
+            error_exit()
+
+        status_str = parts[3].lower()
+        if status_str == "true":
+            up = True
+        elif status_str == "false":
+            up = False
+        else:
+            error_exit()
+
+        if charger_id not in reports:
+            reports[charger_id] = []
+        reports[charger_id].append((start, end, up))
+
+        i += 1
+
+    station_chargers = {}
+    for charger_id, station_id in charger_to_station.items():
+        station_chargers.setdefault(station_id, []).append(charger_id)
 
     results = {}
 
-    for station_id, chargers in station.items():
-        total_time = 0
-        total_up = 0
+    for station_id, charger_ids in station_chargers.items():
+        min_time = None
+        max_time = None
+        events = []  
 
-        for charger_id, intervals in chargers.items():
-            min_t = min(i[0] for i in intervals)
-            max_t = max(i[1] for i in intervals)
+        for charger_id in charger_ids:
+            if charger_id not in reports:
+                continue
+            for start, end, up in reports[charger_id]:
+                if min_time is None or start < min_time:
+                    min_time = start
+                if max_time is None or end > max_time:
+                    max_time = end
 
-            timeline = [0] * (max_t - min_t)
+                if up:
+                    events.append((start, 1))
+                    events.append((end, -1))
 
-            for s, e in intervals:
-                for t in range(s - min_t, e - min_t):
-                    timeline[t] = 1
+        if min_time is None or max_time is None or max_time == min_time:
+            results[station_id] = 0
+            continue
 
-            total_time += len(timeline)
-            total_up += sum(timeline)
+        if not events:
+            results[station_id] = 0
+            continue
 
-        if total_time == 0:
+        events.sort(key=lambda x: x[0])
+
+        active = 0
+        prev_time = min_time
+        up_time = 0
+        idx = 0
+        n = len(events)
+
+        while idx < n:
+            time, delta = events[idx]
+
+            current_time = max(time, min_time)
+
+            if current_time > prev_time and active > 0:
+                up_time += current_time - prev_time
+
+            while idx < n and events[idx][0] == time:
+                active += events[idx][1]
+                idx += 1
+
+            prev_time = current_time
+
+        if active > 0 and max_time > prev_time:
+            up_time += max_time - prev_time
+
+        total_time = max_time - min_time
+        if total_time <= 0:
             uptime = 0
         else:
-            uptime = total_up * 100 // total_time
+            uptime = (up_time * 100) // total_time
 
         results[station_id] = uptime
 
-    for sid in sorted(results):
-        print(sid, results[sid])
+    for station_id in sorted(results.keys()):
+        print(f"{station_id} {results[station_id]}")
 
 if __name__ == "__main__":
     main()
