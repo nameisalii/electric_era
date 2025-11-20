@@ -3,7 +3,7 @@
 This project provides a complete solution to the Charger Uptime coding challenge.
 The goal is to compute station-level uptime percentages based on charger availability logs.
 
-##How to Run
+## How to Run
 python3 solution.py <input_file>
 
 
